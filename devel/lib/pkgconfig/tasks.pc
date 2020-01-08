@@ -1,0 +1,8 @@
+prefix=/home/alaa/rov19_ws/devel
+
+Name: tasks
+Description: Description of tasks
+Version: 0.0.0
+Cflags: 
+Libs: -L/home/alaa/rov19_ws/devel/lib 
+Requires: 

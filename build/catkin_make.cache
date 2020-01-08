@@ -1,0 +1,2 @@
+GUI:depth_pid:distributor:joy:line_follower_node:message_generation:motion_map:motors:pid:pitch_pid:serial:serial_example_master:tasks:video_stream_opencv:yaw_pid
+-DCATKIN_DEVEL_PREFIX=/home/alaa/rov19_ws/devel -DCMAKE_INSTALL_PREFIX=/home/alaa/rov19_ws/install -G Unix Makefiles
