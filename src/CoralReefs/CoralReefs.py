@@ -14,19 +14,38 @@ from skimage import img_as_ubyte
 #END IMPORTS
 #%%
 #PARAMETERS
-DEBUG=1
-GRAY=1
-STD = 128
-NOISE_BLUR = 5
-DOWN_SCALE = 15
-OFF = 16
-BLACK_OFFSET = 60
-FILTER_LOWER_BEFORE =  np.array([94, 15, 149])
-FILTER_UPPER_BEFORE = np.array([179, 255, 255])
-FILTER_LOWER_AFTER =  np.array([94, 15, 149])
-FILTER_UPPER_AFTER = np.array([179, 255, 255])
+CROP = 0 #Crop the photo on the object before alignment
+DEBUG = 1 #Turn on to see debug photos and outputs
+GRAY = 1  #Normalize in grayscale
+STD = 128 #Size for all photos after normalization and padding
+NOISE_BLUR = 5 #Blur width for noise in difference image
+FILTER_BLUR = 5 #Blur width for noise in filtering image
+DOWN_SCALE = 20 #Downscale percent of original image
+OFF = 32 #Padding to image (to fix cropping after warping)
+BLACK_OFFSET = 60 #Offset of things we consider black (in grayscale 0 - 255)
+
+#Filters to get the foreground (we allow noise but fine noise only)
+FILTER_LOWER_BEFORE_RED =  np.array([145, 74, 130])
+FILTER_UPPER_BEFORE_RED = np.array([176, 188, 255])
+FILTER_LOWER_BEFORE_WHITE =  np.array([85, 0, 200])
+FILTER_UPPER_BEFORE_WHITE = np.array([179, 57, 255])
+
+FILTER_LOWER_AFTER_RED =  np.array([140, 80, 0])
+FILTER_UPPER_AFTER_RED = np.array([179, 255, 255])
+FILTER_LOWER_AFTER_WHITE = np.array([0, 0, 255])
+FILTER_UPPER_AFTER_WHITE = np.array([0, 0, 255])
+
+#After clustering, if quantization is on, colors in the photo will be binned
+#into their closest color from this array, to remove extra clusters and to allow
+#for multiple filters
+COLORS = (
+    (0, 0, 0), #BLACK
+    (180,105,255), #PINK
+    (255, 255, 255) #WHITE
+)
 BEFORE_PATH = 'before1.png'
-AFTER_PATH = 'after2.png'
+AFTER_PATH = 'after3.png'
+IS_AFTER_UNDERWATER = 1
 # ECC params
 n_iters = 1000
 e_thresh = 1e-6
@@ -47,7 +66,7 @@ def filterImage(lower, upper, pic):
     return result
 
 def clusterImage(pic, clusters, isgrey=0):
-    pic_n = pic
+    pic_n = None
     if(isgrey==0):
         pic_n = pic.reshape(pic.shape[0]*pic.shape[1], pic.shape[2])
     else:
@@ -55,10 +74,26 @@ def clusterImage(pic, clusters, isgrey=0):
     kmeans = KMeans(n_clusters=clusters, random_state=0).fit(pic_n)
     return kmeans
 
-def getClusteredPic(kmeans, pic, isgrey=0):
+def closest_color(rgbs):
+    ret = []
+    for rgb in rgbs:
+        r, g, b = rgb
+        color_diffs = []
+        for color in COLORS:
+            cr, cg, cb = color
+            color_diff = ((r - cr)**2 + (g - cg)**2 + (b - cb)**2)
+            color_diffs.append((color_diff, color))
+        ret.append( min(color_diffs)[1])
+    return np.array(ret)
+
+def getClusteredPic(kmeans, pic, isgrey=0, quantize =1):
     cluster_pic = pic
-    print( kmeans.cluster_centers_)
-    pic2show = kmeans.cluster_centers_[kmeans.labels_]  
+    pic2show = pic
+    if quantize==1:
+        pic2show = closest_color(kmeans.cluster_centers_[kmeans.labels_])  
+    else:
+        pic2show = kmeans.cluster_centers_[kmeans.labels_]
+        
     if(isgrey==0):
         cluster_pic = pic2show.reshape(pic.shape[0], pic.shape[1], pic.shape[2])
     else:
@@ -85,28 +120,50 @@ def standard(pic):
     return pic, width_n/width_o, height_n/height_o
 
 def normalize(pic, after_flag = 0):
-    pic = cv2.medianBlur(pic, 21)
+#    pic = cv2.medianBlur(pic, 5)
     pic = scale(pic, DOWN_SCALE)
 #TODO: PREBLURRING
 #    pic = cv2.medianBlur(pic, 5)
-    lower = FILTER_LOWER_BEFORE
-    upper = FILTER_UPPER_BEFORE  
+    lower_r = FILTER_LOWER_BEFORE_RED
+    upper_r = FILTER_UPPER_BEFORE_RED
+    lower_w = FILTER_LOWER_BEFORE_WHITE
+    upper_w = FILTER_UPPER_BEFORE_WHITE
     if(after_flag==1):
-        lower = FILTER_LOWER_AFTER
-        upper = FILTER_UPPER_AFTER       
-    pic = filterImage(lower, upper, pic)
-    kmeans = clusterImage(pic, 3)
-    pic = img_as_ubyte(getClusteredPic(kmeans, pic)/255.0)
+        lower_r = FILTER_LOWER_AFTER_RED
+        upper_r = FILTER_UPPER_AFTER_RED
+        lower_w = FILTER_LOWER_AFTER_WHITE
+        upper_w = FILTER_UPPER_AFTER_WHITE
+#        cv2.imshow('Filtered', pic)
+    pic_r = filterImage(lower_r, upper_r, pic)
+    pic_r = cv2.medianBlur(pic_r, FILTER_BLUR)
+    pic_w = filterImage(lower_w, upper_w, pic)
+    pic_w = cv2.medianBlur(pic_w, FILTER_BLUR)
+    pic = pic_w+pic_r
     
-    l,r,t,b,ret=[0,0],[0,0],[0,0],[0,0],None  
+#TODO: CLUSTERING VS QUANTIZATION VS CLUSTERING AND QUANTIZATION  
+    kmeans = clusterImage(pic, 6)
+    pic = img_as_ubyte(getClusteredPic(kmeans, pic, 0,1)/255.0)
+    
+#    pic_n = pic.reshape(pic.shape[0]*pic.shape[1], pic.shape[2])
+#    pic_n = closest_color(pic_n)
+#    pic = pic_n.reshape(pic.shape[0], pic.shape[1], pic.shape[2])
+#    pic = pic.astype('uint8')
+    if DEBUG==1:
+        cv2.imshow('FilteredClusteredQuantized', pic)
+  
+    l,r,t,b,ret=[0,0],[0,0],[0,0],[0,0],None
+    
+#TODO:CROPPING
     if(GRAY==1):
         pic = cv2.cvtColor(pic, cv2.COLOR_BGR2GRAY)
-#TODO:CROPPING
-#        l,r,t,b = crop(pic)
-#    else:
-#        gray = cv2.cvtColor(pic, cv2.COLOR_BGR2GRAY)
-#        l,r,t,b = crop(gray)    
-#    pic = pic[t[1]:b[1], l[0]:r[0]]
+        if CROP==1:
+            l,r,t,b = crop(pic)
+    else:
+        if CROP==1:
+            gray = cv2.cvtColor(pic, cv2.COLOR_BGR2GRAY)
+            l,r,t,b = crop(gray) 
+    if CROP==1:
+        pic = pic[t[1]:b[1], l[0]:r[0]]
         
     pic,sc1x,sc1y = standard(pic)  
     if(GRAY==1):
@@ -133,6 +190,7 @@ def align(img1,img2,mode, w1, h1):
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, n_iters, e_thresh)
     gray1 = None
     gray2 = None
+    img2_aligned = None
     if(GRAY==1):
         gray1 = img1
         gray2 = img2   
@@ -140,7 +198,49 @@ def align(img1,img2,mode, w1, h1):
         gray1 = cv2.cvtColor(img1,cv2.COLOR_BGR2GRAY)
         gray2 = cv2.cvtColor(img2,cv2.COLOR_BGR2GRAY)
     cc, warp = cv2.findTransformECC(gray1, gray2, init_warp, mode, criteria,None,1)
-    img2_aligned = gray2
+    if mode == cv2.MOTION_HOMOGRAPHY :
+        img2_aligned = cv2.warpPerspective(img2, warp, (w1, h1), flags=cv2.WARP_INVERSE_MAP)
+    else:
+        img2_aligned = cv2.warpAffine(img2, warp, (w1, h1), flags=cv2.WARP_INVERSE_MAP)
+    return img2_aligned, warp
+
+def alignPyramid(img1, img2,mode, w1, h1, nol):
+    init_warp =  np.eye(2, 3, dtype=np.float32)
+    if mode == cv2.MOTION_HOMOGRAPHY :
+        init_warp = np.eye(3, 3, dtype=np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, n_iters, e_thresh)
+    warp = init_warp
+    if mode == cv2.MOTION_HOMOGRAPHY :
+        warp = warp * np.array([[1, 1, 2], [1, 1, 2], [1/2, 1/2, 1]], dtype=np.float32)**(1-nol)
+    else:
+        warp = warp * np.array([[1, 1, 2], [1, 1, 2]], dtype=np.float32)**(1-nol)
+    gray1 = None
+    gray2 = None
+    img2_aligned = None
+    if(GRAY==1):
+        gray1 = img1
+        gray2 = img2   
+    else:
+        gray1 = cv2.cvtColor(img1,cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(img2,cv2.COLOR_BGR2GRAY)    
+    gray1_pyr = [gray1]
+    gray2_pyr = [gray2] 
+    for level in range(nol):
+        gray1_pyr.insert(0, cv2.resize(gray1_pyr[0], None, fx=1/2, fy=1/2,
+                                       interpolation=cv2.INTER_AREA))
+        gray2_pyr.insert(0, cv2.resize(gray2_pyr[0], None, fx=1/2, fy=1/2,
+                                       interpolation=cv2.INTER_AREA))
+        # run pyramid ECC
+    for level in range(nol):
+        lvl_start_time = timeit.default_timer() 
+        cc, warp = cv2.findTransformECC(gray1_pyr[level], gray2_pyr[level],
+                                        warp, mode, criteria, None, 1) 
+        if level != nol-1:  # scale up for the next pyramid level
+            if mode == cv2.MOTION_HOMOGRAPHY :
+                warp = warp * np.array([[1, 1, 2], [1, 1, 2], [1/2, 1/2, 1]], dtype=np.float32)
+            else:
+                warp = warp * np.array([[1, 1, 2], [1, 1, 2]], dtype=np.float32)
+        print('Level %i time: '%level, timeit.default_timer() - lvl_start_time)
     if mode == cv2.MOTION_HOMOGRAPHY :
         img2_aligned = cv2.warpPerspective(img2, warp, (w1, h1), flags=cv2.WARP_INVERSE_MAP)
     else:
@@ -159,11 +259,12 @@ if __name__ == '__main__':
     reading_time = timeit.default_timer()-full_scale_start_time
     
     img1,l1,r1,t1,b1,sc1_1,sc2_1  = normalize(img1, 0)
-    img2,l2,r2,t2,b2,sc1_2,sc2_2  = normalize(img2, 1)
+    img2,l2,r2,t2,b2,sc1_2,sc2_2  = normalize(img2, IS_AFTER_UNDERWATER)
     h1, w1 = img1.shape[:2]
     h2, w2 = img1.shape[:2]
     normalization_time = timeit.default_timer() - full_scale_start_time-reading_time
     
+#    img2_aligned, warp = alignPyramid(img1, img2, warp_mode, w1, h1, 0)    
     img2_aligned, warp = align(img1, img2, warp_mode, w1, h1)      
     alignment_time = timeit.default_timer() - full_scale_start_time-normalization_time-reading_time   
     
